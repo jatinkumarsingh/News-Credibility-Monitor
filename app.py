@@ -1,12 +1,12 @@
 import os
 import streamlit as st
 import joblib
-import pandas as pd
-import os
 import sys
 
 # Ensure src can be imported
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+project_root = os.path.dirname(os.path.abspath(__file__))
+if project_root not in sys.path:
+    sys.path.append(project_root)
 
 from src.utils.text_cleaner import clean_text
 from src.config.config import MODEL_PATH, VECTORIZER_PATH
@@ -79,11 +79,14 @@ st.markdown("""
 # Load models
 @st.cache_resource(show_spinner="Loading NLP Models...")
 def load_models():
-    if not os.path.exists(MODEL_PATH) or not os.path.exists(VECTORIZER_PATH):
+    try:
+        if not os.path.exists(MODEL_PATH) or not os.path.exists(VECTORIZER_PATH):
+            return None, None
+        model = joblib.load(MODEL_PATH)
+        vectorizer = joblib.load(VECTORIZER_PATH)
+        return model, vectorizer
+    except Exception:
         return None, None
-    model = joblib.load(MODEL_PATH)
-    vectorizer = joblib.load(VECTORIZER_PATH)
-    return model, vectorizer
 
 model, vectorizer = load_models()
 
