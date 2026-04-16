@@ -25,7 +25,12 @@ if _project_root not in sys.path:
 from src.agent.state import AgentState
 from src.config.config import MODEL_PATH, VECTORIZER_PATH
 from src.llm.client import generate_response
-from src.llm.prompts import build_analysis_prompt
+from src.llm.prompts import (
+    build_conservative_prompt,
+    build_skeptical_prompt,
+    build_neutral_prompt,
+    build_judge_prompt,
+)
 from src.rag.retriever import retrieve_similar_news
 from src.utils.text_cleaner import clean_text
 
@@ -136,7 +141,7 @@ def route_after_ml(state: AgentState) -> str:
     confidence = state.get("ml_confidence", 0.0)
     if confidence >= HIGH_CONFIDENCE_THRESHOLD:
         # High confidence — skip heavy RAG retrieval, go straight to LLM
-        return "llm_node"
+        return "agent_a_node"
     # Low confidence — run full RAG retrieval first
     return "rag_node"
 
@@ -164,72 +169,194 @@ def rag_node(state: AgentState) -> AgentState:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Node 4 — LLM reasoning
+# Nodes 4, 5, 6 — Reasoning Agents (A, B, C)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def llm_node(state: AgentState) -> AgentState:
-    """
-    Build the structured prompt from ML + RAG signals and call the Groq LLM.
-
-    Populated: llm_response
-    """
+def agent_a_node(state: AgentState) -> AgentState:
     try:
-        ml_score = (
-            f"{state.get('ml_prediction', 'UNKNOWN')} "
-            f"({state.get('ml_confidence', 0.0):.1f}%)"
-        )
-        retrieved_docs = state.get("retrieved_docs", [])
-
-        prompt = build_analysis_prompt(
-            article_text=state.get("article_text", ""),
-            ml_score=ml_score,
-            retrieved_docs=retrieved_docs,
-        )
-
+        ml_score = f"{state.get('ml_prediction', 'UNKNOWN')} ({state.get('ml_confidence', 0.0):.1f}%)"
+        prompt = build_conservative_prompt(state.get("article_text", ""), ml_score, state.get("retrieved_docs", []))
         response = generate_response(prompt)
-        return {"llm_response": response, "error": None}
+        return {"agent_a_response": response, "error": None}
     except Exception as exc:
-        return {"llm_response": "", "error": str(exc)}
+        return {"agent_a_response": f"Verdict: UNKNOWN\nConfidence: 0\nReasoning: Error {exc}", "error": str(exc)}
+
+
+def agent_b_node(state: AgentState) -> AgentState:
+    try:
+        ml_score = f"{state.get('ml_prediction', 'UNKNOWN')} ({state.get('ml_confidence', 0.0):.1f}%)"
+        prompt = build_skeptical_prompt(state.get("article_text", ""), ml_score, state.get("retrieved_docs", []))
+        response = generate_response(prompt)
+        return {"agent_b_response": response, "error": None}
+    except Exception as exc:
+        return {"agent_b_response": f"Verdict: UNKNOWN\nConfidence: 0\nReasoning: Error {exc}", "error": str(exc)}
+
+
+def agent_c_node(state: AgentState) -> AgentState:
+    try:
+        ml_score = f"{state.get('ml_prediction', 'UNKNOWN')} ({state.get('ml_confidence', 0.0):.1f}%)"
+        prompt = build_neutral_prompt(state.get("article_text", ""), ml_score, state.get("retrieved_docs", []))
+        response = generate_response(prompt)
+        return {"agent_c_response": response, "error": None}
+    except Exception as exc:
+        return {"agent_c_response": f"Verdict: UNKNOWN\nConfidence: 0\nReasoning: Error {exc}", "error": str(exc)}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Node 5 — Output formatting
+# Node 7 — Final Judge Agent
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _extract_section(text: str, section: str) -> str:
-    """
-    Pull the content under a named section heading from the LLM response.
+def judge_node(state: AgentState) -> AgentState:
+    try:
+        a_resp = state.get("agent_a_response", "")
+        b_resp = state.get("agent_b_response", "")
+        c_resp = state.get("agent_c_response", "")
+        
+        # Precompute agreement to feed into the Judge prompt
+        v_a = _extract_field(a_resp, "Verdict").upper()
+        v_b = _extract_field(b_resp, "Verdict").upper()
+        v_c = _extract_field(c_resp, "Verdict").upper()
+        
+        real_count = sum(1 for v in [v_a, v_b, v_c] if "REAL" in v)
+        fake_count = sum(1 for v in [v_a, v_b, v_c] if "FAKE" in v)
+        
+        distribution = f"REAL: {real_count}, FAKE: {fake_count}"
+        
+        if real_count == 3 or fake_count == 3:
+            agreement_level = "High"
+        elif real_count == 2 or fake_count == 2:
+            agreement_level = "Medium"
+        else:
+            agreement_level = "Low"
 
-    Expects headings like "Summary:\n<content>\n\nAnalysis:\n..."
-    """
-    pattern = rf"{section}:\s*(.*?)(?=\n\s*(?:Summary|Analysis|Verdict|Disclaimer):|\Z)"
+        ml_score = f"{state.get('ml_prediction', 'UNKNOWN')} ({state.get('ml_confidence', 0.0):.1f}%)"
+        prompt = build_judge_prompt(
+            ml_score,
+            a_resp,
+            b_resp,
+            c_resp,
+            agreement_level,
+            distribution
+        )
+        response = generate_response(prompt)
+        return {"judge_response": response, "error": None}
+    except Exception as exc:
+        return {"judge_response": f"Final Verdict: UNKNOWN\nFinal Confidence: 0\nConsensus Summary: Error {exc}\nDisagreement Reason: Error", "error": str(exc)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Node 8 — Output formatting
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _extract_field(text: str, field_name: str) -> str:
+    """Extract a simple labeled field like 'Verdict: REAL' up to the newline."""
+    pattern = rf"{field_name}:\s*(.*?)(?=\n|$)"
+    match = re.search(pattern, text, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+def _extract_reasoning(text: str) -> str:
+    """Extract multi-line reasoning."""
+    pattern = rf"Reasoning:\s*(.*?)(?=\Z)"
     match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
     if match:
         return match.group(1).strip()
     return ""
 
+def _extract_consensus(text: str) -> str:
+    """Extract multi-line consensus."""
+    pattern = rf"Consensus Summary:\s*(.*?)(?=\n\s*Disagreement Reason:|\Z)"
+    match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+def _extract_disagreement(text: str) -> str:
+    """Extract multi-line disagreement reason."""
+    pattern = rf"Disagreement Reason:\s*(.*?)(?=\Z)"
+    match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+def _parse_agent(response_str: str) -> dict:
+    return {
+        "verdict": _extract_field(response_str, "Verdict"),
+        "confidence": _extract_field(response_str, "Confidence"),
+        "reasoning": _extract_reasoning(response_str),
+    }
 
 def output_node(state: AgentState) -> AgentState:
     """
-    Parse the LLM response into a clean structured dictionary.
-
-    Populated: final_report (keys: summary, analysis, verdict, disclaimer,
-                              ml_score, retrieved_count)
+    Assemble the LLM outputs and compute explicit rules and summaries.
     """
-    llm_response = state.get("llm_response", "")
-    ml_prediction = state.get("ml_prediction", "UNKNOWN")
-    ml_confidence = state.get("ml_confidence", 0.0)
+    # 1. RAG Summary
     retrieved_docs = state.get("retrieved_docs", [])
-
-    report = {
-        "summary": _extract_section(llm_response, "Summary"),
-        "analysis": _extract_section(llm_response, "Analysis"),
-        "verdict": _extract_section(llm_response, "Verdict"),
-        "disclaimer": _extract_section(llm_response, "Disclaimer"),
-        "ml_score": f"{ml_prediction} ({ml_confidence:.1f}%)",
-        "retrieved_count": len(retrieved_docs),
-        # Keep the raw LLM response for debugging / app.py display
-        "raw_llm_response": llm_response,
+    rag_real_count = sum(1 for doc in retrieved_docs if "REAL" in doc.get("metadata", {}).get("label", "").upper())
+    rag_fake_count = sum(1 for doc in retrieved_docs if "FAKE" in doc.get("metadata", {}).get("label", "").upper())
+            
+    rag_summary = {
+        "total_docs": len(retrieved_docs),
+        "real_docs": rag_real_count,
+        "fake_docs": rag_fake_count,
     }
-
+    
+    # 2. Agreement calculation
+    a_resp = state.get("agent_a_response", "")
+    b_resp = state.get("agent_b_response", "")
+    c_resp = state.get("agent_c_response", "")
+    
+    v_a = _extract_field(a_resp, "Verdict").upper()
+    v_b = _extract_field(b_resp, "Verdict").upper()
+    v_c = _extract_field(c_resp, "Verdict").upper()
+    
+    real_count = sum(1 for v in [v_a, v_b, v_c] if "REAL" in v)
+    fake_count = sum(1 for v in [v_a, v_b, v_c] if "FAKE" in v)
+    
+    if real_count == 3 or fake_count == 3:
+        agreement_level = "High"
+    elif real_count == 2 or fake_count == 2:
+        agreement_level = "Medium"
+    else:
+        agreement_level = "Low"
+        
+    agreement = {
+        "level": agreement_level,
+        "distribution": {"REAL": real_count, "FAKE": fake_count}
+    }
+    
+    # 3. Risk Factors computation
+    risk_factors = []
+    ml_conf = state.get('ml_confidence', 0.0)
+    if ml_conf < 70.0:
+        risk_factors.append("Low ML confidence (<70%)")
+    
+    if rag_real_count > 0 and rag_fake_count > 0:
+        risk_factors.append("Conflicting evidence (Mixed RAG signals)")
+        
+    if agreement_level in ["Medium", "Low"]:
+        risk_factors.append("Weak consensus (Agents disagreed)")
+        
+    if len(retrieved_docs) < 3:
+        risk_factors.append("Limited supporting data (Few docs retrieved)")
+        
+    # 4. Assemble Final Dict
+    judge_resp = state.get("judge_response", "")
+    report = {
+        "agent_a": _parse_agent(a_resp),
+        "agent_b": _parse_agent(b_resp),
+        "agent_c": _parse_agent(c_resp),
+        "final": {
+            "verdict": _extract_field(judge_resp, "Final Verdict"),
+            "confidence": _extract_field(judge_resp, "Final Confidence"),
+            "consensus": _extract_consensus(judge_resp),
+            "disagreement": _extract_disagreement(judge_resp),
+        },
+        "agreement": agreement,
+        "rag_summary": rag_summary,
+        "risk_factors": risk_factors,
+        "ml_signal": f"{state.get('ml_prediction', 'UNKNOWN')} ({ml_conf:.1f}%)",
+        "rag_count": len(retrieved_docs),
+    }
     return {"final_report": report, "error": state.get("error")}

@@ -25,7 +25,10 @@ from langgraph.graph import StateGraph, END
 
 from src.agent.state import AgentState
 from src.agent.nodes import (
-    llm_node,
+    agent_a_node,
+    agent_b_node,
+    agent_c_node,
+    judge_node,
     ml_node,
     output_node,
     preprocess_node,
@@ -42,9 +45,12 @@ def _build_graph() -> StateGraph:
     # ── Register nodes ──
     builder.add_node("preprocess_node", preprocess_node)
     builder.add_node("ml_node",         ml_node)
-    builder.add_node("rag_node",         rag_node)
-    builder.add_node("llm_node",         llm_node)
-    builder.add_node("output_node",      output_node)
+    builder.add_node("rag_node",        rag_node)
+    builder.add_node("agent_a_node",    agent_a_node)
+    builder.add_node("agent_b_node",    agent_b_node)
+    builder.add_node("agent_c_node",    agent_c_node)
+    builder.add_node("judge_node",      judge_node)
+    builder.add_node("output_node",     output_node)
 
     # ── Entry point ──
     builder.set_entry_point("preprocess_node")
@@ -57,14 +63,17 @@ def _build_graph() -> StateGraph:
         "ml_node",
         route_after_ml,
         {
-            "rag_node": "rag_node",   # low confidence  → full RAG + LLM
-            "llm_node": "llm_node",   # high confidence → skip RAG
+            "rag_node": "rag_node",           # low confidence  → full RAG
+            "agent_a_node": "agent_a_node",   # high confidence → skip RAG
         },
     )
 
-    # Both paths converge at llm_node → output_node → END
-    builder.add_edge("rag_node",    "llm_node")
-    builder.add_edge("llm_node",    "output_node")
+    # Both paths converge at agent_a_node -> judge -> output -> END
+    builder.add_edge("rag_node",      "agent_a_node")
+    builder.add_edge("agent_a_node",  "agent_b_node")
+    builder.add_edge("agent_b_node",  "agent_c_node")
+    builder.add_edge("agent_c_node",  "judge_node")
+    builder.add_edge("judge_node",    "output_node")
     builder.add_edge("output_node", END)
 
     return builder.compile()
@@ -131,8 +140,8 @@ if __name__ == "__main__":
     report = run_agent(sample_article)
 
     required_keys = {
-        "summary", "analysis", "verdict", "disclaimer",
-        "ml_score", "retrieved_count",
+        "agent_a", "agent_b", "agent_c", "final",
+        "ml_signal", "rag_count",
     }
     missing = required_keys - report.keys()
     if missing:

@@ -38,34 +38,16 @@ def _format_retrieved_docs(retrieved_docs: list) -> str:
     return "\n".join(lines)
 
 
-def build_analysis_prompt(
+def _build_agent_prompt(
+    role_description: str,
     article_text: str,
     ml_score: str,
     retrieved_docs: list,
 ) -> str:
-    """
-    Build the full analysis prompt sent to the LLM.
-
-    Parameters
-    ----------
-    article_text : str
-        The raw (or lightly cleaned) article text to analyse.
-    ml_score : str
-        Human-readable ML prediction, e.g. ``"FAKE (82.3%)"`` or
-        ``"REAL (94.1%)"``.
-    retrieved_docs : list[dict]
-        Output of ``retrieve_similar_news()`` — each dict has keys
-        ``text``, ``metadata``, and ``distance``.
-
-    Returns
-    -------
-    str
-        Fully assembled prompt string.
-    """
     evidence_block = _format_retrieved_docs(retrieved_docs)
     article_snippet = _truncate(article_text, max_chars=1500)
 
-    prompt = f"""You are a news credibility analyst. Your job is to evaluate whether the article below is REAL or FAKE based ONLY on the evidence provided. Do NOT invent facts or make unsupported claims.
+    return f"""{role_description}
 
 ═══════════════════════════════════════
 ARTICLE UNDER REVIEW
@@ -87,21 +69,81 @@ INSTRUCTIONS
 ═══════════════════════════════════════
 Using ONLY the information above, produce a structured credibility report in EXACTLY the following format:
 
-Summary:
-<Write a brief 2-3 sentence summary of the article under review.>
-
-Analysis:
-<Compare the article with the retrieved reference articles. Note similarities or differences in language, topic, and style. Comment on how the ML prediction aligns with the retrieved evidence. If the evidence is weak or limited, explicitly state that.>
-
-Verdict:
-<State "Likely REAL" or "Likely FAKE" with a brief justification. Include a confidence qualifier (High / Moderate / Low) based on the strength of evidence.>
-
-Disclaimer:
-<State that this analysis is automated and based on pattern matching against a reference dataset. It should not be treated as a definitive fact-check. Recommend consulting authoritative fact-checking organisations for verification.>
+Verdict: <REAL or FAKE>
+Confidence: <A single number between 0 and 100 representing your confidence>
+Reasoning: <Provide a concise explanation (maximum 3 to 5 lines) justifying your verdict based on the evidence>
 
 IMPORTANT RULES:
 - Do NOT hallucinate or invent facts not present in the evidence above.
-- If the retrieved evidence is insufficient, say so clearly.
-- Keep the response concise and well-structured.
+- If the retrieved evidence is insufficient, say so clearly within your Reasoning.
+- Strictly adhere to the requested keys (Verdict, Confidence, Reasoning).
 """
-    return prompt
+
+
+def build_conservative_prompt(article_text: str, ml_score: str, retrieved_docs: list) -> str:
+    role = (
+        "You are Agent A, a Conservative News Analyst. You strongly rely on the provided Machine Learning "
+        "prediction and the retrieved reference documents. You trust statistical patterns and prior data, "
+        "tending to follow the combined ML and RAG signals heavily in your reasoning."
+    )
+    return _build_agent_prompt(role, article_text, ml_score, retrieved_docs)
+
+
+def build_skeptical_prompt(article_text: str, ml_score: str, retrieved_docs: list) -> str:
+    role = (
+        "You are Agent B, a Skeptical News Analyst. Your primary goal is to challenge the validity of the "
+        "claim. Intensely question the evidence quality and completeness. Highlight any uncertainty and "
+        "weaknesses in the article."
+    )
+    return _build_agent_prompt(role, article_text, ml_score, retrieved_docs)
+
+
+def build_neutral_prompt(article_text: str, ml_score: str, retrieved_docs: list) -> str:
+    role = (
+        "You are Agent C, a Neutral News Analyst. You provide balanced reasoning, carefully weighing "
+        "similarities and discrepancies objectively. Avoid strong bias unless the evidence is extremely clear."
+    )
+    return _build_agent_prompt(role, article_text, ml_score, retrieved_docs)
+
+
+def build_judge_prompt(ml_score: str, agent_a: str, agent_b: str, agent_c: str, agreement_level: str, verdict_distribution: str) -> str:
+    return f"""You are the Final Judge Agent. You are reviewing the independent analyses of three distinct expert agents (Conservative, Skeptical, and Neutral) regarding a news article's credibility.
+
+═══════════════════════════════════════
+MACHINE LEARNING SIGNAL
+═══════════════════════════════════════
+ML Prediction: {ml_score}
+
+═══════════════════════════════════════
+AGENT AGREEMENT LEVEL
+═══════════════════════════════════════
+Agreement Level: {agreement_level}
+Distribution: {verdict_distribution}
+
+═══════════════════════════════════════
+AGENT A (Conservative Analyst - Trusts ML/Data)
+═══════════════════════════════════════
+{agent_a}
+
+═══════════════════════════════════════
+AGENT B (Skeptical Analyst - Questions Evidence)
+═══════════════════════════════════════
+{agent_b}
+
+═══════════════════════════════════════
+AGENT C (Neutral Analyst - Balanced Objective Review)
+═══════════════════════════════════════
+{agent_c}
+
+═══════════════════════════════════════
+INSTRUCTIONS
+═══════════════════════════════════════
+Your task is to compare all three agent outputs, resolve any disagreements, and produce the final, authoritative verdict.
+
+Produce your output in EXACTLY the following format:
+
+Final Verdict: <REAL or FAKE>
+Final Confidence: <A single number between 0 and 100>
+Consensus Summary: <Detailed synthesis explaining why the agents agreed or disagreed and how you reached your final decision>
+Disagreement Reason: <If there was any disagreement, explicitly mention the conflicting viewpoints and note the strongest/weakest arguments among them. If the agreement was High (Unanimous), explicitly output "None, all agents agreed.">
+"""

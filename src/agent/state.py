@@ -25,8 +25,11 @@ class AgentState(TypedDict):
     # After rag_node (may be skipped on high-confidence paths)
     retrieved_docs: List[dict]      # List of dicts from retrieve_similar_news()
 
-    # After llm_node
-    llm_response: str               # Raw structured text returned by the LLM
+    # After respective agents
+    agent_a_response: str
+    agent_b_response: str
+    agent_c_response: str
+    judge_response: str
 
     # After output_node
     final_report: dict              # Parsed dict with keys: summary, analysis,

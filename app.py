@@ -319,11 +319,11 @@ def load_metrics():
 
 
 @st.cache_resource(show_spinner="Initialising Agentic AI pipeline …")
-def load_agent():
-    """Import and warm-up the LangGraph agent (cached per session)."""
+def load_graph():
+    """Import and warm-up the LangGraph agent graph (cached per session)."""
     try:
-        from src.agent.graph import run_agent as _run_agent
-        return _run_agent
+        from src.agent.graph import _graph
+        return _graph
     except Exception as e:
         return None
 
@@ -634,19 +634,86 @@ if analyze_clicked and news_text.strip():
                 "GROQ_API_KEY is not set. Add it to your `.env` file and restart the app."
             )
         else:
-            run_agent = load_agent()
-            if run_agent is None:
+            _graph = load_graph()
+            if _graph is None:
                 st.error(
                     "Could not load the Agentic AI pipeline. "
                     "Check that all dependencies are installed and try again."
                 )
             else:
-                with st.spinner("Running Agentic AI pipeline (ML → RAG → LLM) …"):
+                report = {}
+                initial_state = {
+                    "article_text": news_text,
+                    "cleaned_text": "",
+                    "ml_prediction": "",
+                    "ml_confidence": 0.0,
+                    "retrieved_docs": [],
+                    "llm_response": "",
+                    "final_report": {},
+                    "error": None,
+                }
+                
+                import time
+
+                with st.status("Agentic AI is evaluating the article...", expanded=True) as status:
+                    st.write("**Step 1: Preprocessing input text...**")
                     try:
-                        report = run_agent(news_text)
+                        for update in _graph.stream(initial_state):
+                            node_name = list(update.keys())[0]
+                            state_val = update[node_name]
+                            
+                            if node_name == "preprocess_node":
+                                st.write("✓ Cleaned and tokenised input text.")
+                                st.write("")
+                                st.write("**Step 2: Checking classic ML prediction...**")
+                                # Tiny artificial sleep to make the step readable
+                                time.sleep(0.3)
+                                
+                            elif node_name == "ml_node":
+                                ml_pred = state_val.get("ml_prediction", "UNKNOWN")
+                                conf = state_val.get("ml_confidence", 0.0)
+                                st.write(f"✓ ML suggests **{ml_pred}** ({conf:.1f}% confidence)")
+                                st.write("")
+                                if conf >= 85.0:
+                                    st.write("✓ High confidence threshold met. Skipping RAG retrieval.")
+                                    st.write("")
+                                    st.write("**Step 3: Multi-Agent Reasoning Pipeline initialized...**")
+                                else:
+                                    st.write("**Step 3: Searching knowledge base for similar context (RAG)...**")
+                                    
+                            elif node_name == "rag_node":
+                                docs = state_val.get("retrieved_docs", [])
+                                st.write(f"✓ Retrieved **{len(docs)}** contextually similar articles.")
+                                st.write("")
+                                st.write("**Step 4: Multi-Agent Reasoning Pipeline initialized...**")
+                                
+                            elif node_name == "agent_a_node":
+                                st.write("✓ **Agent A (Conservative)** completed analysis.")
+                                st.write("")
+                                st.write("**Step 5: Running Agent B (Skeptical)...**")
+
+                            elif node_name == "agent_b_node":
+                                st.write("✓ **Agent B (Skeptical)** completed analysis.")
+                                st.write("")
+                                st.write("**Step 6: Running Agent C (Neutral)...**")
+
+                            elif node_name == "agent_c_node":
+                                st.write("✓ **Agent C (Neutral)** completed analysis.")
+                                st.write("")
+                                st.write("**Step 7: Final Judge Agent evaluating consensus...**")
+
+                            elif node_name == "judge_node":
+                                st.write("✓ **Judge Agent** synthesized final verdict.")
+                                st.write("")
+                                st.write("**Finalizing report...**")
+                                
+                            elif node_name == "output_node":
+                                report = state_val.get("final_report", {})
+                                
+                        status.update(label="Analysis complete!", state="complete", expanded=False)
                     except Exception as e:
+                        status.update(label="Analysis failed.", state="error", expanded=False)
                         st.error(f"Agent pipeline error: {e}")
-                        report = {}
 
                 if not report:
                     st.error(
@@ -654,76 +721,142 @@ if analyze_clicked and news_text.strip():
                         "Check the terminal for error details."
                     )
                 else:
-                    summary   = report.get("summary", "")
-                    analysis  = report.get("analysis", "")
-                    verdict   = report.get("verdict", "")
-                    disclaimer = report.get("disclaimer", "")
-                    ml_score  = report.get("ml_score", "")
-                    retrieved = report.get("retrieved_count", 0)
+                    agent_a   = report.get("agent_a", {})
+                    agent_b   = report.get("agent_b", {})
+                    agent_c   = report.get("agent_c", {})
+                    final     = report.get("final", {})
+                    agreement = report.get("agreement", {})
+                    rag_sum   = report.get("rag_summary", {})
+                    risks     = report.get("risk_factors", [])
+                    ml_score  = report.get("ml_signal", "")
+                    retrieved = report.get("rag_count", 0)
 
-                    # ── Verdict (highlighted) ──
-                    vclass = _verdict_class(verdict)
+                    # ── 1. Final Verdict (Highlighted) ──
+                    f_verdict = final.get("verdict", "UNKNOWN")
+                    vclass = _verdict_class(f_verdict)
                     verdict_icon = (
                         "✅" if "real" in vclass else
                         "🚨" if "fake" in vclass else "⚠️"
                     )
+                    
                     st.markdown(
                         f"""
                         <div class="{vclass}">
                             <div style="font-size:2rem;margin-bottom:6px">{verdict_icon}</div>
-                            <div style="font-size:1.05rem;font-weight:700;margin-bottom:6px">Verdict</div>
-                            <div style="font-size:0.97rem;line-height:1.65;opacity:0.9">{verdict or "No verdict returned."}</div>
+                            <div style="font-size:1.05rem;font-weight:700;margin-bottom:6px">Final Verdict (Aggregated Consensus)</div>
+                            <div style="font-size:1.2rem;font-weight:800;margin-bottom:6px">{f_verdict} ({final.get("confidence", "0")}%)</div>
+                            <div style="font-size:0.97rem;line-height:1.65;opacity:0.9;text-align:left;margin-top:14px;padding-top:14px;border-top:1px solid rgba(128,128,128,0.2);">
+                                <strong>Judge Synthesis:</strong><br/>{final.get("consensus", "No consensus provided.")}
+                            </div>
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
-
-                    # ── ML signal pill ──
+                    
                     if ml_score:
                         st.markdown(
-                            f'<span class="ml-chip">ML signal: {ml_score} · {retrieved} RAG docs retrieved</span>',
+                            f'<div style="text-align:center;margin-top:8px"><span class="ml-chip">ML signal: {ml_score} · {retrieved} RAG docs retrieved</span></div>',
                             unsafe_allow_html=True,
                         )
 
                     st.markdown("")
+                    
+                    # ── 2. Agreement Level ──
+                    st.markdown('<p class="section-label">1. Agreement Analysis</p>', unsafe_allow_html=True)
+                    a_level = agreement.get("level", "UNKNOWN")
+                    dist = agreement.get("distribution", {})
+                    dist_str = f"REAL: {dist.get('REAL', 0)} | FAKE: {dist.get('FAKE', 0)}"
+                    
+                    border_color = '#3b82f6' if a_level == 'High' else '#eab308' if a_level == 'Medium' else '#ef4444'
 
-                    # ── Summary + Analysis side by side (or stacked on small screens) ──
-                    left, right = st.columns([1, 1], gap="medium")
+                    agreement_html = f"""
+                        <div class="agent-section" style="border-left: 4px solid {border_color}; margin-bottom: 24px;">
+                            <div style="font-weight:700;font-size:1.1rem;margin-bottom:4px;">Agreement Level: {a_level}</div>
+                            <div style="font-size:0.9rem;opacity:0.8;margin-bottom:8px;">Distribution: {dist_str}</div>
+                    """
+                    
+                    if a_level != "High" and final.get("disagreement") and "none" not in final.get("disagreement", "").lower():
+                        disagree_text = final.get("disagreement").replace("\n", "<br/>")
+                        agreement_html += f"""
+                            <div style="font-size:0.9rem;margin-top:12px;padding-top:12px;border-top:1px solid rgba(128,128,128,0.2);">
+                                <strong>Conflicting Viewpoints:</strong><br/>{disagree_text}
+                            </div>
+                        """
+                        
+                    agreement_html += "</div>"
+                    st.markdown(agreement_html, unsafe_allow_html=True)
 
-                    with left:
+                    # ── 3. Agent Cards (A, B, C) ──
+                    st.markdown('<p class="section-label">2. Expert Panel Breakdown</p>', unsafe_allow_html=True)
+                    
+                    c1, c2, c3 = st.columns(3, gap="medium")
+                    
+                    for col, agent_name, agent_data in zip(
+                        [c1, c2, c3],
+                        ["Agent A (Conservative)", "Agent B (Skeptical)", "Agent C (Neutral)"],
+                        [agent_a, agent_b, agent_c]
+                    ):
+                        with col:
+                            v = agent_data.get("verdict", "UNKNOWN")
+                            conf = agent_data.get("confidence", "0")
+                            reason = agent_data.get("reasoning", "No reasoning returned.")
+                            icon = "✅" if "real" in v.lower() else "🚨" if "fake" in v.lower() else "⚠️"
+                            
+                            st.markdown(
+                                f"""
+                                <div class="agent-section" style="margin-bottom:0; border-bottom-left-radius:0; border-bottom-right-radius:0;">
+                                    <div class="agent-section-title">{agent_name}</div>
+                                    <div style="font-size:1.1rem; font-weight:700; margin-bottom:8px;">{icon} {v} ({conf}%)</div>
+                                </div>
+                                """,
+                                unsafe_allow_html=True,
+                            )
+                            with st.expander("View detailed reasoning"):
+                                st.write(reason)
+                                
+                    st.markdown("<br/>", unsafe_allow_html=True)
+
+                    # ── 4 & 5. Evidence Summary & Risk Factors ──
+                    left_col, right_col = st.columns(2, gap="medium")
+                    
+                    with left_col:
+                        st.markdown('<p class="section-label">3. Evidence Summary (RAG)</p>', unsafe_allow_html=True)
                         st.markdown(
                             f"""
-                            <div class="agent-section">
-                                <div class="agent-section-title">Summary</div>
-                                <div class="agent-section-body">{summary or "No summary returned."}</div>
+                            <div class="agent-section" style="height:100%;">
+                                <div style="font-weight:700;margin-bottom:8px;">Retrieved Documents: {rag_sum.get("total_docs", 0)}</div>
+                                <ul style="margin:0;padding-left:20px;font-size:0.95rem;">
+                                    <li><span style="color:#10b981;font-weight:600;">REAL:</span> {rag_sum.get("real_docs", 0)}</li>
+                                    <li><span style="color:#ef4444;font-weight:600;">FAKE:</span> {rag_sum.get("fake_docs", 0)}</li>
+                                </ul>
                             </div>
                             """,
-                            unsafe_allow_html=True,
+                            unsafe_allow_html=True
                         )
 
-                    with right:
-                        st.markdown(
-                            f"""
-                            <div class="agent-section">
-                                <div class="agent-section-title">Analysis</div>
-                                <div class="agent-section-body">{analysis or "No analysis returned."}</div>
-                            </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
-
-                    # ── Disclaimer ──
-                    if disclaimer:
-                        st.markdown(
-                            f'<div class="disclaimer-box">{disclaimer}</div>',
-                            unsafe_allow_html=True,
-                        )
-
-                    # ── Debug expander ──
-                    raw = report.get("raw_llm_response", "")
-                    if raw:
-                        with st.expander("Raw LLM response (debug view)"):
-                            st.text(raw)
+                    with right_col:
+                        st.markdown('<p class="section-label">4. Risk Factors</p>', unsafe_allow_html=True)
+                        if risks:
+                            risk_bullets = "".join([f'<li style="margin-bottom:4px;">{r}</li>' for r in risks])
+                            st.markdown(
+                                f"""
+                                <div class="agent-section" style="height:100%;">
+                                    <ul style="margin:0;padding-left:20px;font-size:0.95rem;color:#ef4444;">
+                                        {risk_bullets}
+                                    </ul>
+                                </div>
+                                """,
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            st.markdown(
+                                """
+                                <div class="agent-section" style="height:100%; display:flex; align-items:center; justify-content:center;">
+                                    <span style="color:#10b981;font-weight:600;">✓ No critical risk factors detected</span>
+                                </div>
+                                """,
+                                unsafe_allow_html=True
+                            )
 
 # ---------------------------------------------------------------------------
 # Footer
