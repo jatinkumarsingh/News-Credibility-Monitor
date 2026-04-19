@@ -1,11 +1,48 @@
+import os
+
+from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
 from src.agent.graph import run_agent
 
+# Load .env from the backend directory (sibling of this file).
+load_dotenv()
+
 app = FastAPI(title="News Credibility Monitor API")
+
+# CORS — allow the deployed frontend (Vercel) plus local dev to hit the API.
+# Set CORS_ALLOW_ORIGINS in the Render dashboard as a comma-separated list,
+# e.g. "https://your-app.vercel.app,https://your-app-git-main.vercel.app".
+_default_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+_env_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOW_ORIGINS", "").split(",")
+    if origin.strip()
+]
+allow_origins = _env_origins or _default_origins
+
+# Optional: regex to match Vercel preview deployments
+# (e.g. https://news-credibility-monitor-git-*-yourname.vercel.app).
+allow_origin_regex = os.getenv("CORS_ALLOW_ORIGIN_REGEX") or None
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allow_origins,
+    allow_origin_regex=allow_origin_regex,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.get("/")
 def home():
     return {"status": "ok", "message": "News Credibility Monitor API is running"}
+
 
 @app.post("/analyze")
 def analyze(data: dict):
